@@ -50,10 +50,12 @@ function App() {
   useEffect(() => {
     const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
     console.log('🔌 Connecting to backend:', backendUrl);
+    console.log('🌍 Environment:', import.meta.env.MODE);
     
     const newSocket = io(backendUrl, {
       transports: ['websocket', 'polling'],
       timeout: 20000,
+      forceNew: true,
     });
 
     newSocket.on('connect', () => {
