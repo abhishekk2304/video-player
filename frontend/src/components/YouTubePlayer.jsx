@@ -149,7 +149,7 @@ const YouTubePlayer = forwardRef(({ videoId, onStateChange, onReady, seekTo, pla
         <div className="absolute inset-0 flex items-center justify-center bg-gray-100 rounded">
           <div className="text-center">
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-2"></div>
-            <p className="text-sm text-gray-600">Loading video...</p>
+            <p className="text-sm text-white">Loading video...</p>
           </div>
         </div>
       )}
@@ -158,8 +158,8 @@ const YouTubePlayer = forwardRef(({ videoId, onStateChange, onReady, seekTo, pla
         <div className="absolute inset-0 flex items-center justify-center bg-red-50 rounded">
           <div className="text-center p-4">
             <div className="text-red-500 text-2xl mb-2">⚠️</div>
-            <p className="text-sm text-red-600">{error}</p>
-            <p className="text-xs text-gray-500 mt-1">Please check your internet connection</p>
+            <p className="text-sm text-red-300">{error}</p>
+            <p className="text-xs text-white/70 mt-1">Please check your internet connection</p>
           </div>
         </div>
       )}

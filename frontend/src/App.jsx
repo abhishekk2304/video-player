@@ -31,6 +31,7 @@ function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLeavingSession, setIsLeavingSession] = useState(false);
   const [error, setError] = useState(null);
   const [socket, setSocket] = useState(null);
   
@@ -110,6 +111,7 @@ function App() {
       console.error('❌ Session error:', data);
       setError(data.error);
       setIsLoading(false);
+      setIsLeavingSession(false);
     });
 
     // Handle chat messages
@@ -174,6 +176,38 @@ function App() {
     newSocket.on('video-url-update', (videoUrl) => {
       console.log('📺 Received video URL update:', videoUrl);
       setVideoUrl(videoUrl);
+    });
+
+    // Handle session disconnect events
+    newSocket.on('host-disconnected', () => {
+      console.log('👤 Host disconnected from session');
+      setError('Host has left the session. Session ended.');
+      setSessionId('');
+      setVideoUrl('');
+      setChatMessages([]);
+      setIsHost(false);
+      setIsLoading(false);
+      setIsLeavingSession(false);
+    });
+
+    newSocket.on('participant-disconnected', (data) => {
+      console.log('👤 Participant disconnected:', data);
+      setChatMessages(prev => [...prev, {
+        id: Date.now(),
+        text: `👤 Participant left (${data.participantCount} remaining)`,
+        sender: 'system',
+        timestamp: new Date().toLocaleTimeString()
+      }]);
+    });
+
+    newSocket.on('participant-joined', (data) => {
+      console.log('👤 Participant joined:', data);
+      setChatMessages(prev => [...prev, {
+        id: Date.now(),
+        text: `👤 New participant joined (${data.participantCount} total)`,
+        sender: 'system',
+        timestamp: new Date().toLocaleTimeString()
+      }]);
     });
 
     setSocket(newSocket);
@@ -310,6 +344,39 @@ function App() {
     }
   };
 
+  // Handle leaving session
+  const handleLeaveSession = () => {
+    if (!socket || !sessionId) {
+      console.log('No socket or session to leave');
+      return;
+    }
+    
+    console.log('👋 Leaving session:', sessionId);
+    setIsLeavingSession(true);
+    
+    try {
+      socket.emit('leave-session', { sessionId });
+      
+      // Clear session state immediately
+      setSessionId('');
+      setVideoUrl('');
+      setChatMessages([]);
+      setIsHost(false);
+      setVideoState({ isPlaying: false, currentTime: 0, videoId: null });
+      window.history.replaceState({}, '', window.location.origin);
+      
+      // Add a small delay to ensure the leave event is processed
+      setTimeout(() => {
+        setIsLeavingSession(false);
+      }, 1000);
+      
+    } catch (error) {
+      console.error('Error leaving session:', error);
+      setIsLeavingSession(false);
+      setError('Failed to leave session. Please try again.');
+    }
+  };
+
   // Handle URL session parameter on page load
   useEffect(() => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -378,18 +445,26 @@ function App() {
   }, [sessionId, socket, videoUrl, videoState.currentTime, isSyncing]);
 
   return (
-    <div className="min-h-screen bg-gray-100 flex flex-col">
-      <header className="p-2 sm:p-4 bg-white shadow">
+    <div className="min-h-screen flex flex-col relative">
+      {/* Animated geometric shapes */}
+      <div className="geometric-shapes">
+        <div className="shape"></div>
+        <div className="shape"></div>
+        <div className="shape"></div>
+        <div className="shape"></div>
+      </div>
+      
+      <header className="p-2 sm:p-4 glass-card shadow-lg">
         <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
-          <h1 className="text-xl sm:text-2xl font-bold text-blue-600">Watch Together</h1>
-          <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm">
+          <h1 className="text-xl sm:text-2xl font-bold text-white drop-shadow-lg">🎬 Watch Together</h1>
+                      <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm text-white">
             <div className="flex items-center gap-1">
               <div className={`w-2 h-2 sm:w-3 sm:h-3 rounded-full ${
-                connectionState === 'connected' ? 'bg-green-500' :
-                connectionState === 'connecting' ? 'bg-yellow-500' :
-                'bg-red-500'
+                connectionState === 'connected' ? 'bg-green-400' :
+                connectionState === 'connecting' ? 'bg-yellow-400' :
+                'bg-red-400'
               }`}></div>
-              <span>
+              <span className="text-white">
                 {connectionState === 'connected' ? '🟢 Connected' :
                  connectionState === 'connecting' ? '🟡 Connecting...' :
                  '🔴 Disconnected'}
@@ -414,24 +489,24 @@ function App() {
 
       <main className="flex-1 flex flex-col lg:flex-row">
         {/* Session Management Section */}
-        <section className="w-full lg:w-80 xl:w-96 bg-white border-b lg:border-b-0 lg:border-r border-gray-200 p-3 sm:p-4">
-          <h2 className="text-lg font-semibold mb-4">Session Management</h2>
+        <section className="w-full lg:w-80 xl:w-96 glass-card border-b lg:border-b-0 lg:border-r border-white/20 p-3 sm:p-4">
+          <h2 className="text-lg font-semibold mb-4 text-white">Session Management</h2>
           
           {error && (
-            <div className="w-full max-w-2xl mt-2 text-red-600 bg-red-100 border border-red-300 rounded p-2">
+            <div className="w-full max-w-2xl mt-2 text-red-200 bg-red-900/30 border border-red-400/50 rounded p-2 backdrop-blur-sm">
               {error}
             </div>
           )}
 
           {sessionId && (
-            <div className="bg-green-100 border border-green-400 text-green-700 px-3 sm:px-4 py-3 rounded mb-4">
+            <div className="bg-green-900/30 border border-green-400/50 text-green-200 px-3 sm:px-4 py-3 rounded mb-4 backdrop-blur-sm">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                <div className="flex-1">
-                  <strong>Session Active!</strong> Share this link with a friend:
-                  <div className="text-xs sm:text-sm mt-1 break-all">
-                    {window.location.origin}?session={sessionId}
+                                  <div className="flex-1">
+                    <strong className="text-green-300">Session Active!</strong> Share this link with a friend:
+                    <div className="text-xs sm:text-sm mt-1 break-all text-green-100">
+                      {window.location.origin}?session={sessionId}
+                    </div>
                   </div>
-                </div>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <button
                     onClick={() => {
@@ -443,20 +518,11 @@ function App() {
                     Copy Link
                   </button>
                   <button
-                    onClick={() => {
-                      if (socket) {
-                        socket.emit('leave-session', { sessionId });
-                      }
-                      setSessionId(null);
-                      setVideoUrl('');
-                      setChatMessages([]);
-                      setConnectionState('disconnected');
-                      setVideoState({ isPlaying: false, currentTime: 0 });
-                      window.history.replaceState({}, '', window.location.origin);
-                    }}
-                    className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-xs sm:text-sm"
+                    onClick={handleLeaveSession}
+                    disabled={isLeavingSession}
+                    className="bg-red-500 hover:bg-red-600 disabled:bg-gray-400 text-white px-3 py-1 rounded text-xs sm:text-sm"
                   >
-                    Leave Session
+                    {isLeavingSession ? <LoadingSpinner /> : 'Leave Session'}
                   </button>
                 </div>
               </div>
@@ -526,7 +592,7 @@ function App() {
               
               {/* Quick Start Videos */}
               <div className="mb-4">
-                <h4 className="text-sm font-medium text-gray-700 mb-2">Quick Start Videos:</h4>
+                <h4 className="text-sm font-medium text-white mb-2">Quick Start Videos:</h4>
                 <div className="flex flex-wrap gap-2">
                   {[
                     { name: 'Rick Roll', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
@@ -539,7 +605,7 @@ function App() {
                         setVideoUrl(video.url);
                         console.log('🎬 Quick start video selected:', video.url);
                       }}
-                      className="text-xs bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded"
+                      className="text-xs bg-white/20 hover:bg-white/30 text-white px-2 py-1 rounded"
                     >
                       {video.name}
                     </button>
@@ -638,9 +704,9 @@ function App() {
               </div>
 
               {showDebug && (
-                <div className="bg-gray-100 border border-gray-300 rounded p-4 mb-4">
-                  <h3 className="font-bold mb-2">🔧 Debug Information</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                <div className="bg-white/10 backdrop-blur-sm border border-white/30 rounded p-4 mb-4">
+                  <h3 className="font-bold mb-2 text-white">🔧 Debug Information</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-white">
                     <div>
                       <strong>Session:</strong> {sessionId || 'None'}<br/>
                       <strong>Connection:</strong> {connectionState}<br/>
@@ -664,13 +730,13 @@ function App() {
               
               {/* Session Info */}
               {sessionId && (
-                <div className="bg-blue-50 border border-blue-200 rounded p-2 sm:p-3 mb-4">
+                <div className="bg-blue-900/30 border border-blue-400/50 rounded p-2 sm:p-3 mb-4 backdrop-blur-sm">
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-0">
                     <div>
-                      <strong className="text-blue-800 text-xs sm:text-sm">Session ID:</strong> 
-                      <span className="ml-1 sm:ml-2 font-mono text-xs sm:text-sm">{sessionId}</span>
+                      <strong className="text-blue-300 text-xs sm:text-sm">Session ID:</strong> 
+                      <span className="ml-1 sm:ml-2 font-mono text-xs sm:text-sm text-blue-200">{sessionId}</span>
                     </div>
-                    <div className="text-xs sm:text-sm text-blue-600">
+                    <div className="text-xs sm:text-sm text-blue-200">
                       {connectionState === 'connected' ? '🟢 2/2 Connected' : '🟡 Connecting...'}
                     </div>
                   </div>
@@ -681,15 +747,15 @@ function App() {
         </section>
 
         {/* Video Player Section */}
-        <section className="flex-1 flex flex-col items-center justify-center p-2 sm:p-4">
+        <section className="flex-1 flex flex-col items-center justify-center p-2 sm:p-4 glass-card m-2">
           <div id="video-container" className="w-full max-w-4xl">
-            <div className="text-xs text-gray-500 mb-2">
+                          <div className="text-xs text-white/70 mb-2">
               Debug: videoUrl = "{videoUrl}" | extractVideoId = "{extractVideoId(videoUrl)}"
             </div>
             
             {videoUrl && extractVideoId(videoUrl) ? (
-              <div className="w-full bg-gray-200 rounded-lg overflow-hidden relative">
-                <div className="text-xs sm:text-sm text-gray-600 mb-2 p-2 bg-white rounded">
+              <div className="w-full bg-white/10 backdrop-blur-sm rounded-lg overflow-hidden relative">
+                <div className="text-xs sm:text-sm text-white mb-2 p-2 bg-white/20 rounded">
                   🎬 Playing: {extractVideoId(videoUrl)}
                 </div>
                 <div className="w-full h-48 sm:h-64 md:h-80 lg:h-96">
@@ -745,18 +811,18 @@ function App() {
                 </div>
               </div>
             ) : (
-              <div className="w-full h-48 sm:h-64 md:h-80 lg:h-96 bg-gray-200 rounded-lg flex items-center justify-center">
+              <div className="w-full h-48 sm:h-64 md:h-80 lg:h-96 bg-white/10 backdrop-blur-sm rounded-lg flex items-center justify-center">
                 <div className="text-center p-4">
                   <div className="text-4xl sm:text-6xl mb-4">📺</div>
-                  <p className="text-gray-600 mb-2 text-sm sm:text-base">Enter a YouTube URL above to start watching together!</p>
-                  <div className="text-xs sm:text-sm text-gray-500 space-y-1">
+                  <p className="text-white mb-2 text-sm sm:text-base">Enter a YouTube URL above to start watching together!</p>
+                  <div className="text-xs sm:text-sm text-white/70 space-y-1">
                     <p>• Paste a YouTube URL in the input field</p>
                     <p>• Click "🎬 Load Video" to display the player</p>
                     <p>• Click "📺 Share Video" to share with others</p>
                     <p>• Or use the Quick Start buttons below</p>
                   </div>
                   {videoUrl && (
-                    <p className="text-xs sm:text-sm text-red-500 mt-2">
+                    <p className="text-xs sm:text-sm text-red-300 mt-2">
                       Invalid YouTube URL: {videoUrl}
                     </p>
                   )}
@@ -767,9 +833,9 @@ function App() {
         </section>
 
         {/* Chat Section */}
-        <aside className="w-full lg:w-80 xl:w-96 bg-white border-t lg:border-t-0 lg:border-l border-gray-200 flex flex-col p-3 sm:p-4">
-          <div className="flex justify-between items-center mb-2">
-            <h3 className="text-lg font-semibold">💬 Chat</h3>
+        <aside className="w-full lg:w-80 xl:w-96 glass-card border-t lg:border-t-0 lg:border-l border-white/20 flex flex-col p-3 sm:p-4">
+                      <div className="flex justify-between items-center mb-2">
+              <h3 className="text-lg font-semibold text-white">💬 Chat</h3>
             <button
               onClick={() => setChatMessages([])}
               className="text-sm bg-gray-500 hover:bg-gray-600 text-white px-2 py-1 rounded"
@@ -777,22 +843,22 @@ function App() {
               Clear Chat
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto mb-2 space-y-2 max-h-32 sm:max-h-48 lg:max-h-64">
+          <div className="flex-1 overflow-y-auto mb-2 space-y-2 max-h-32 sm:max-h-48 lg:max-h-64 bg-white/10 backdrop-blur-sm rounded p-2">
             {chatMessages.length === 0 ? (
-              <div className="text-center text-gray-500 text-xs sm:text-sm py-4">
+              <div className="text-center text-white/70 text-xs sm:text-sm py-4">
                 No messages yet. Start chatting!
               </div>
             ) : (
               chatMessages.map((msg, idx) => (
                 <div key={msg.id || idx} className={`p-2 rounded text-xs sm:text-sm ${
-                  msg.sender === 'me' ? 'bg-blue-100 ml-2 sm:ml-4' : 
-                  msg.sender === 'system' ? 'bg-gray-100 text-center' :
-                  'bg-gray-100 mr-2 sm:mr-4'
+                  msg.sender === 'me' ? 'bg-blue-500/30 ml-2 sm:ml-4' : 
+                  msg.sender === 'system' ? 'bg-white/20 text-center' :
+                  'bg-white/20 mr-2 sm:mr-4'
                 }`}>
-                  <div className="text-xs text-gray-500 mb-1">
+                  <div className="text-xs text-white/70 mb-1">
                     {msg.sender === 'me' ? 'You' : msg.sender === 'system' ? 'System' : 'Peer'} • {msg.timestamp}
                   </div>
-                  <div className="break-words text-black">{msg.text}</div>
+                  <div className="break-words text-white">{msg.text}</div>
                 </div>
               ))
             )}
@@ -803,7 +869,7 @@ function App() {
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               placeholder="Type a message..."
-              className="flex-1 px-2 sm:px-3 py-2 border border-gray-300 rounded text-black text-xs sm:text-sm"
+              className="flex-1 px-2 sm:px-3 py-2 border border-white/30 rounded text-white text-xs sm:text-sm bg-white/10 backdrop-blur-sm placeholder-white/50"
               disabled={!sessionId || !socket}
             />
             <button
