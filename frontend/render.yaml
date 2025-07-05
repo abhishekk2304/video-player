@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: watch-together-frontend
+    env: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: VITE_BACKEND_URL
+        value: https://your-backend-url.onrender.com
