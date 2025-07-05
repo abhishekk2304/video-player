@@ -36,11 +36,33 @@ const YouTubePlayer = forwardRef(({ videoId, onStateChange, onReady, seekTo, pla
   const containerRef = useRef(null);
   const [isLoading, setIsLoading] = React.useState(true);
   const [error, setError] = React.useState(null);
+  const lastSeekTimeRef = useRef(0);
+  const isBufferingRef = useRef(false);
 
   useImperativeHandle(ref, () => ({
-    playVideo: () => playerRef.current?.playVideo(),
-    pauseVideo: () => playerRef.current?.pauseVideo(),
-    seekTo: (seconds) => playerRef.current?.seekTo(seconds, true),
+    playVideo: () => {
+      if (playerRef.current && !isBufferingRef.current) {
+        playerRef.current.playVideo();
+      }
+    },
+    pauseVideo: () => {
+      if (playerRef.current && !isBufferingRef.current) {
+        playerRef.current.pauseVideo();
+      }
+    },
+    seekTo: (seconds) => {
+      if (playerRef.current && !isBufferingRef.current) {
+        const now = Date.now();
+        // Prevent seeking too frequently (minimum 2 seconds between seeks)
+        if (now - lastSeekTimeRef.current > 2000) {
+          console.log('🎬 YouTubePlayer: Seeking to', seconds, 'seconds');
+          playerRef.current.seekTo(seconds, true);
+          lastSeekTimeRef.current = now;
+        } else {
+          console.log('🎬 YouTubePlayer: Skipping seek (too frequent)');
+        }
+      }
+    },
     getCurrentTime: () => playerRef.current?.getCurrentTime() || 0,
     getPlayerState: () => playerRef.current?.getPlayerState(),
   }));
@@ -79,6 +101,9 @@ const YouTubePlayer = forwardRef(({ videoId, onStateChange, onReady, seekTo, pla
             // YouTube states: -1 (unstarted), 0 (ended), 1 (playing), 2 (paused), 3 (buffering), 5 (video cued)
             if (e.data === 3) {
               console.log('🎬 YouTubePlayer: Video is buffering...');
+              isBufferingRef.current = true;
+            } else {
+              isBufferingRef.current = false;
             }
             onStateChange && onStateChange(e.data, e.target);
           },
@@ -96,6 +121,15 @@ const YouTubePlayer = forwardRef(({ videoId, onStateChange, onReady, seekTo, pla
           origin: window.location.origin,
           autoplay: 0,
           mute: 0,
+          // Optimize for better buffering and sync
+          iv_load_policy: 3, // Disable annotations
+          cc_load_policy: 0, // Disable captions by default
+          fs: 1, // Allow fullscreen
+          playsinline: 1, // Play inline on mobile
+          // Reduce buffering issues
+          vq: 'medium', // Force medium quality for better buffering
+          // Enable better buffering
+          host: 'https://www.youtube-nocookie.com', // Use privacy-enhanced domain
         },
       });
     }).catch((error) => {
@@ -111,18 +145,25 @@ const YouTubePlayer = forwardRef(({ videoId, onStateChange, onReady, seekTo, pla
   }, [videoId]);
 
   useEffect(() => {
-    if (playerRef.current && typeof seekTo === 'number' && seekTo >= 0) {
-      console.log('🎬 YouTubePlayer: Seeking to', seekTo, 'seconds');
-      try {
-        playerRef.current.seekTo(seekTo, true);
-      } catch (error) {
-        console.error('🎬 YouTubePlayer: Error seeking:', error);
+    if (playerRef.current && typeof seekTo === 'number' && seekTo >= 0 && !isBufferingRef.current) {
+      const now = Date.now();
+      // Prevent seeking too frequently (minimum 2 seconds between seeks)
+      if (now - lastSeekTimeRef.current > 2000) {
+        console.log('🎬 YouTubePlayer: Seeking to', seekTo, 'seconds');
+        try {
+          playerRef.current.seekTo(seekTo, true);
+          lastSeekTimeRef.current = now;
+        } catch (error) {
+          console.error('🎬 YouTubePlayer: Error seeking:', error);
+        }
+      } else {
+        console.log('🎬 YouTubePlayer: Skipping seek (too frequent)');
       }
     }
   }, [seekTo]);
 
   useEffect(() => {
-    if (playerRef.current && play) {
+    if (playerRef.current && play && !isBufferingRef.current) {
       console.log('🎬 YouTubePlayer: Playing video');
       try {
         playerRef.current.playVideo();
@@ -133,7 +174,7 @@ const YouTubePlayer = forwardRef(({ videoId, onStateChange, onReady, seekTo, pla
   }, [play]);
 
   useEffect(() => {
-    if (playerRef.current && pause) {
+    if (playerRef.current && pause && !isBufferingRef.current) {
       console.log('🎬 YouTubePlayer: Pausing video');
       try {
         playerRef.current.pauseVideo();

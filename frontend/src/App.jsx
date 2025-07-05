@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import './App.css'
 import { io } from 'socket.io-client'
 import YouTubePlayer from './components/YouTubePlayer'
+import VideoPreloader from './components/VideoPreloader'
 
 function extractVideoId(url) {
   console.log('🔍 Extracting video ID from URL:', url);
@@ -33,11 +34,41 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isLeavingSession, setIsLeavingSession] = useState(false);
   const [error, setError] = useState(null);
+  const [successMessage, setSuccessMessage] = useState('');
   const [socket, setSocket] = useState(null);
+  const [preloadedVideos, setPreloadedVideos] = useState(new Set());
+  const [networkQuality, setNetworkQuality] = useState('good'); // good, poor, unknown
   
   const playerRef = useRef();
   const syncIntervalRef = useRef();
   const lastSyncTimeRef = useRef(0);
+  const bufferingCountRef = useRef(0);
+
+  // Handle video preload completion
+  const handlePreloadComplete = (videoId) => {
+    console.log('🎬 Video preloaded:', videoId);
+    setPreloadedVideos(prev => new Set([...prev, videoId]));
+  };
+
+  // Detect network quality and adjust sync behavior
+  const detectNetworkQuality = () => {
+    if ('connection' in navigator) {
+      const connection = navigator.connection;
+      if (connection.effectiveType === 'slow-2g' || connection.effectiveType === '2g') {
+        setNetworkQuality('poor');
+        console.log('🌐 Network quality: Poor (2G/slow-2G)');
+      } else if (connection.effectiveType === '3g') {
+        setNetworkQuality('poor');
+        console.log('🌐 Network quality: Poor (3G)');
+      } else {
+        setNetworkQuality('good');
+        console.log('🌐 Network quality: Good (4G/5G)');
+      }
+    } else {
+      setNetworkQuality('unknown');
+      console.log('🌐 Network quality: Unknown');
+    }
+  };
 
   // Loading spinner component
   const LoadingSpinner = () => (
@@ -133,39 +164,64 @@ function App() {
       const state = data.state || data;
       console.log('📺 Applying video state:', state);
       
-      // Add sync message to chat
-      setChatMessages(prev => [...prev, {
-        id: Date.now(),
-        text: `🔄 Video synced to ${Math.floor(state.currentTime)}s (${state.isPlaying ? 'playing' : 'paused'})`,
-        sender: 'system',
-        timestamp: new Date().toLocaleTimeString()
-      }]);
+      // Only sync if the difference is significant (more than 5 seconds) to reduce buffering
+      const currentTime = playerRef.current?.getCurrentTime() || 0;
+      const timeDifference = Math.abs(state.currentTime - currentTime);
       
-      // Apply the state immediately
-      setVideoState(state);
-      
-      // Also apply directly to player if available
-      if (playerRef.current && state.currentTime !== undefined) {
-        // Add a longer delay to ensure player is ready
-        setTimeout(() => {
-          console.log('🎬 Directly applying to player - seeking to:', state.currentTime);
-          try {
-            playerRef.current.seekTo(state.currentTime, true);
-            
-            // Add another delay before play/pause to ensure seek is complete
+      if (timeDifference > 5) {
+        // Add sync message to chat
+        setChatMessages(prev => [...prev, {
+          id: Date.now(),
+          text: `🔄 Video synced to ${Math.floor(state.currentTime)}s (${state.isPlaying ? 'playing' : 'paused'})`,
+          sender: 'system',
+          timestamp: new Date().toLocaleTimeString()
+        }]);
+        
+        // Apply the state immediately
+        setVideoState(state);
+        
+        // Also apply directly to player if available
+        if (playerRef.current && state.currentTime !== undefined) {
+          // Add a longer delay to ensure player is ready
+          setTimeout(() => {
+            console.log('🎬 Directly applying to player - seeking to:', state.currentTime);
+            try {
+              playerRef.current.seekTo(state.currentTime, true);
+              
+              // Add another delay before play/pause to ensure seek is complete
+              setTimeout(() => {
+                if (state.isPlaying) {
+                  console.log('🎬 Directly applying to player - playing');
+                  playerRef.current.playVideo();
+                } else {
+                  console.log('🎬 Directly applying to player - pausing');
+                  playerRef.current.pauseVideo();
+                }
+              }, 500); // Increased delay to reduce buffering
+            } catch (error) {
+              console.error('🎬 Error applying video state:', error);
+            }
+          }, 500); // Increased delay to reduce buffering
+        }
+      } else {
+        console.log('📺 Skipping sync - time difference too small:', timeDifference);
+        // Still update play/pause state if needed
+        if (playerRef.current && state.isPlaying !== undefined) {
+          const playerState = playerRef.current.getPlayerState();
+          const isCurrentlyPlaying = playerState === 1;
+          
+          if (state.isPlaying && !isCurrentlyPlaying) {
             setTimeout(() => {
-              if (state.isPlaying) {
-                console.log('🎬 Directly applying to player - playing');
-                playerRef.current.playVideo();
-              } else {
-                console.log('🎬 Directly applying to player - pausing');
-                playerRef.current.pauseVideo();
-              }
+              console.log('🎬 Syncing play state only');
+              playerRef.current.playVideo();
             }, 200);
-          } catch (error) {
-            console.error('🎬 Error applying video state:', error);
+          } else if (!state.isPlaying && isCurrentlyPlaying) {
+            setTimeout(() => {
+              console.log('🎬 Syncing pause state only');
+              playerRef.current.pauseVideo();
+            }, 200);
           }
-        }, 300);
+        }
       }
       
       lastSyncTimeRef.current = Date.now();
@@ -219,6 +275,9 @@ function App() {
 
   // Session management functions
   const handleCreateSession = () => {
+    setError(null); // Clear any previous errors
+    setSuccessMessage(''); // Clear any previous success messages
+    
     if (!socket) {
       setError('Not connected to server');
       return;
@@ -230,8 +289,11 @@ function App() {
   };
 
   const handleJoinSession = () => {
+    setError(null); // Clear any previous errors
+    setSuccessMessage(''); // Clear any previous success messages
+    
     if (!joinInput.trim()) {
-      alert('Please enter a session ID');
+      setError('Please enter a session ID');
       return;
     }
     
@@ -269,11 +331,14 @@ function App() {
   };
 
   const handleShareVideo = () => {
+    setError(null); // Clear any previous errors
+    setSuccessMessage(''); // Clear any previous success messages
+    
     if (!videoUrl || !sessionId || !socket) return;
     
     const videoId = extractVideoId(videoUrl);
     if (!videoId) {
-      alert('Please enter a valid YouTube URL');
+      setError('Please enter a valid YouTube URL');
       return;
     }
     
@@ -300,6 +365,10 @@ function App() {
   const handleVideoUrlChange = (e) => {
     const url = e.target.value;
     setVideoUrl(url);
+    
+    // Clear messages when user starts typing
+    setError(null);
+    setSuccessMessage('');
     
     // Auto-load video when a valid YouTube URL is pasted
     if (url && extractVideoId(url)) {
@@ -333,14 +402,48 @@ function App() {
     setTimeout(() => setIsSyncing(false), 1000);
   };
 
+  const handleOptimizedSync = () => {
+    if (!sessionId || !socket || !playerRef.current) return;
+    
+    console.log('⚡ Optimized sync triggered');
+    setIsSyncing(true);
+    
+    const currentTime = playerRef.current.getCurrentTime();
+    const playerState = playerRef.current.getPlayerState();
+    const isPlaying = playerState === 1;
+    
+    // Round to nearest second to reduce precision issues and buffering
+    const roundedTime = Math.round(currentTime);
+    
+    const newState = {
+      currentTime: roundedTime,
+      isPlaying,
+      videoId: extractVideoId(videoUrl)
+    };
+    
+    console.log('⚡ Optimized sync - sending state:', newState);
+    
+    socket.emit('video-state-update', {
+      sessionId,
+      state: newState
+    });
+    
+    setSuccessMessage('Video synced with buffering optimization!');
+    setTimeout(() => setSuccessMessage(''), 3000);
+    setTimeout(() => setIsSyncing(false), 1000);
+  };
+
   // Copy session link to clipboard
   const copySessionLink = async () => {
     const sessionLink = `${window.location.origin}?session=${sessionId}`;
     try {
       await navigator.clipboard.writeText(sessionLink);
-      alert('Session link copied to clipboard!');
+      setSuccessMessage('Session link copied to clipboard!');
+      setTimeout(() => setSuccessMessage(''), 3000);
     } catch (err) {
       console.error('❌ Failed to copy session link:', err);
+      setError('Failed to copy session link');
+      setTimeout(() => setError(null), 3000);
     }
   };
 
@@ -390,6 +493,24 @@ function App() {
     }
   }, [sessionId, socket]);
 
+  // Detect network quality on mount
+  useEffect(() => {
+    detectNetworkQuality();
+    
+    // Listen for network changes
+    if ('connection' in navigator) {
+      const handleNetworkChange = () => {
+        detectNetworkQuality();
+      };
+      
+      navigator.connection.addEventListener('change', handleNetworkChange);
+      
+      return () => {
+        navigator.connection.removeEventListener('change', handleNetworkChange);
+      };
+    }
+  }, []);
+
   // Update URL when session is created
   useEffect(() => {
     if (sessionId) {
@@ -408,7 +529,10 @@ function App() {
       return;
     }
 
-    // Send sync every 3 seconds
+    // Adaptive sync interval based on network quality
+    const syncInterval = networkQuality === 'poor' ? 15000 : 10000; // 15s for poor, 10s for good
+    const timeThreshold = networkQuality === 'poor' ? 5 : 3; // 5s threshold for poor, 3s for good
+    
     syncIntervalRef.current = setInterval(() => {
       if (playerRef.current && !isSyncing && videoUrl) {
         try {
@@ -422,9 +546,9 @@ function App() {
             videoId: extractVideoId(videoUrl) 
           };
           
-          // Only sync if time has changed significantly (more than 1 second)
-          if (Math.abs(currentTime - videoState.currentTime) > 1) {
-            console.log('📺 Periodic sync - sending state:', newState);
+          // Only sync if time has changed significantly (adaptive threshold)
+          if (Math.abs(currentTime - videoState.currentTime) > timeThreshold) {
+            console.log(`📺 Periodic sync (${networkQuality} network) - sending state:`, newState);
             socket.emit('video-state-update', {
               sessionId,
               state: newState
@@ -434,7 +558,7 @@ function App() {
           console.error('📺 Error in periodic sync:', error);
         }
       }
-    }, 3000);
+    }, syncInterval);
 
     return () => {
       if (syncIntervalRef.current) {
@@ -442,10 +566,16 @@ function App() {
         syncIntervalRef.current = null;
       }
     };
-  }, [sessionId, socket, videoUrl, videoState.currentTime, isSyncing]);
+  }, [sessionId, socket, videoUrl, videoState.currentTime, isSyncing, networkQuality]);
 
   return (
     <div className="min-h-screen flex flex-col relative">
+      {/* Video Preloader for better buffering */}
+      <VideoPreloader 
+        videoId={extractVideoId(videoUrl)} 
+        onPreloadComplete={handlePreloadComplete}
+      />
+      
       {/* Animated geometric shapes */}
       <div className="geometric-shapes">
         <div className="shape"></div>
@@ -481,6 +611,26 @@ function App() {
                 >
                   📋 Copy
                 </button>
+                {videoUrl && extractVideoId(videoUrl) && (
+                  <div className="flex items-center gap-1">
+                    <span className="text-xs text-white/70">Buffering:</span>
+                    <span className={`text-xs ${preloadedVideos.has(extractVideoId(videoUrl)) ? 'text-green-400' : 'text-yellow-400'}`}>
+                      {preloadedVideos.has(extractVideoId(videoUrl)) ? '✅ Optimized' : '⏳ Loading...'}
+                    </span>
+                  </div>
+                )}
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-white/70">Network:</span>
+                  <span className={`text-xs ${
+                    networkQuality === 'good' ? 'text-green-400' : 
+                    networkQuality === 'poor' ? 'text-yellow-400' : 
+                    'text-gray-400'
+                  }`}>
+                    {networkQuality === 'good' ? '🟢 Fast' : 
+                     networkQuality === 'poor' ? '🟡 Slow' : 
+                     '⚪ Unknown'}
+                  </span>
+                </div>
               </div>
             ) : null}
           </div>
@@ -497,6 +647,21 @@ function App() {
               {error}
             </div>
           )}
+          
+          {successMessage && (
+            <div className="w-full max-w-2xl mt-2 text-green-200 bg-green-900/30 border border-green-400/50 rounded p-2 backdrop-blur-sm">
+              {successMessage}
+            </div>
+          )}
+          
+          {videoUrl && !preloadedVideos.has(extractVideoId(videoUrl)) && (
+            <div className="w-full max-w-2xl mt-2 text-blue-200 bg-blue-900/30 border border-blue-400/50 rounded p-2 backdrop-blur-sm">
+              <div className="flex items-center gap-2">
+                <span>⚡</span>
+                <span className="text-sm">Optimizing video buffering... This reduces stuttering when syncing.</span>
+              </div>
+            </div>
+          )}
 
           {sessionId && (
             <div className="bg-green-900/30 border border-green-400/50 text-green-200 px-3 sm:px-4 py-3 rounded mb-4 backdrop-blur-sm">
@@ -511,7 +676,8 @@ function App() {
                   <button
                     onClick={() => {
                       navigator.clipboard.writeText(`${window.location.origin}?session=${sessionId}`);
-                      alert('Session link copied to clipboard!');
+                      setSuccessMessage('Session link copied to clipboard!');
+                      setTimeout(() => setSuccessMessage(''), 3000);
                     }}
                     className="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded text-xs sm:text-sm"
                   >
@@ -543,7 +709,11 @@ function App() {
                 <input
                   type="text"
                   value={joinInput}
-                  onChange={(e) => setJoinInput(e.target.value)}
+                  onChange={(e) => {
+                    setJoinInput(e.target.value);
+                    setError(null);
+                    setSuccessMessage('');
+                  }}
                   placeholder="Enter session ID"
                   className="flex-1 px-3 py-2 border border-gray-300 rounded text-black"
                 />
@@ -572,7 +742,8 @@ function App() {
                       if (videoUrl && extractVideoId(videoUrl)) {
                         console.log('🎬 Loading video:', videoUrl);
                       } else {
-                        alert('Please enter a valid YouTube URL');
+                        setError('Please enter a valid YouTube URL');
+                        setTimeout(() => setError(null), 3000);
                       }
                     }}
                     disabled={!videoUrl}
@@ -620,6 +791,13 @@ function App() {
                   className="bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white px-2 sm:px-4 py-2 rounded text-xs sm:text-sm"
                 >
                   🔄 Sync
+                </button>
+                <button
+                  onClick={handleOptimizedSync}
+                  disabled={!sessionId || !socket}
+                  className="bg-green-500 hover:bg-green-600 disabled:bg-gray-400 text-white px-2 sm:px-4 py-2 rounded text-xs sm:text-sm"
+                >
+                  ⚡ Optimized Sync
                 </button>
                 <button
                   onClick={() => {
