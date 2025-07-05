@@ -21,6 +21,9 @@ app.use(express.json());
 // Store active sessions
 const sessions = new Map();
 
+// Configuration
+const MAX_PARTICIPANTS_PER_SESSION = 100;
+
 // Session cleanup interval (clean up sessions older than 1 hour)
 setInterval(() => {
   const now = Date.now();
@@ -51,7 +54,7 @@ io.on('connection', (socket) => {
     const sessionId = generateSessionId();
     sessions.set(sessionId, {
       host: socket.id,
-      guest: null,
+      participants: [socket.id], // Array of participant IDs
       videoUrl: null,
       videoState: {
         currentTime: 0,
@@ -85,32 +88,39 @@ io.on('connection', (socket) => {
       return;
     }
     
-    if (session.guest) {
-      console.log(`❌ Session "${sessionId}" is full`);
+    if (session.participants.length >= MAX_PARTICIPANTS_PER_SESSION) {
+      console.log(`❌ Session "${sessionId}" is full (${session.participants.length}/${MAX_PARTICIPANTS_PER_SESSION})`);
       if (typeof callback === 'function') callback({ error: 'Session is full' });
       socket.emit('session-error', { error: 'Session is full' });
       return;
     }
     
-    session.guest = socket.id;
+    session.participants.push(socket.id);
     socket.join(sessionId);
     socket.sessionId = sessionId;
     socket.isHost = false;
     
-    console.log(`✅ User ${socket.id} joined session ${sessionId}`);
+    console.log(`✅ User ${socket.id} joined session ${sessionId} (${session.participants.length}/${MAX_PARTICIPANTS_PER_SESSION})`);
     if (typeof callback === 'function') callback({ 
       sessionId, 
       isHost: false, 
       videoUrl: session.videoUrl,
-      videoState: session.videoState
+      videoState: session.videoState,
+      participantCount: session.participants.length
     });
     socket.emit('session-joined', { 
       sessionId, 
       isHost: false, 
       videoUrl: session.videoUrl,
-      videoState: session.videoState
+      videoState: session.videoState,
+      participantCount: session.participants.length
     });
-    io.to(session.host).emit('guest-joined');
+    
+    // Notify all other participants about the new join
+    socket.to(sessionId).emit('participant-joined', {
+      participantId: socket.id,
+      participantCount: session.participants.length
+    });
   });
 
   // Handle WebRTC signaling
@@ -152,13 +162,10 @@ io.on('connection', (socket) => {
       const state = data.state || data;
       console.log(`📺 Video state update from ${socket.id}:`, state);
       session.videoState = state;
-      const targetId = socket.isHost ? session.guest : session.host;
-      if (targetId) {
-        console.log(`🔄 Forwarding video state to ${targetId}:`, state);
-        io.to(targetId).emit('video-state-update', state);
-      } else {
-        console.log(`⚠️ No target found for video state update in session ${socket.sessionId}`);
-      }
+      
+      // Broadcast to all other participants in the session
+      socket.to(socket.sessionId).emit('video-state-update', state);
+      console.log(`🔄 Forwarding video state to ${session.participants.length - 1} participants in session ${socket.sessionId}`);
     } else {
       console.log(`❌ Session not found for video state update from ${socket.id}`);
     }
@@ -169,9 +176,8 @@ io.on('connection', (socket) => {
     const session = sessions.get(socket.sessionId);
     if (session && socket.isHost) {
       session.videoUrl = videoUrl;
-      if (session.guest) {
-        io.to(session.guest).emit('video-url-update', videoUrl);
-      }
+      // Broadcast to all other participants
+      socket.to(socket.sessionId).emit('video-url-update', videoUrl);
     }
   });
 
@@ -181,11 +187,9 @@ io.on('connection', (socket) => {
     if (session) {
       session.videoUrl = data.videoUrl;
       session.videoState.videoId = data.videoId;
-      const targetId = socket.isHost ? session.guest : session.host;
-      if (targetId) {
-        io.to(targetId).emit('video-url-update', data.videoUrl);
-        io.to(targetId).emit('video-state-update', session.videoState);
-      }
+      // Broadcast to all other participants
+      socket.to(socket.sessionId).emit('video-url-update', data.videoUrl);
+      socket.to(socket.sessionId).emit('video-state-update', session.videoState);
       console.log(`📺 Video shared in session ${socket.sessionId}: ${data.videoId}`);
     }
   });
@@ -194,13 +198,11 @@ io.on('connection', (socket) => {
   socket.on('send-message', (data) => {
     const session = sessions.get(socket.sessionId);
     if (session) {
-      const targetId = socket.isHost ? session.guest : session.host;
-      if (targetId) {
-        io.to(targetId).emit('chat-message', {
-          message: data.message,
-          sender: 'peer'
-        });
-      }
+      // Broadcast to all other participants
+      socket.to(socket.sessionId).emit('chat-message', {
+        message: data.message,
+        sender: 'peer'
+      });
       console.log(`💬 Chat message in session ${socket.sessionId}: ${data.message}`);
     }
   });
@@ -210,10 +212,8 @@ io.on('connection', (socket) => {
     const session = sessions.get(socket.sessionId);
     if (session) {
       session.videoState = data.state;
-      const targetId = socket.isHost ? session.guest : session.host;
-      if (targetId) {
-        io.to(targetId).emit('video-state-update', data.state);
-      }
+      // Broadcast to all other participants
+      socket.to(socket.sessionId).emit('video-state-update', data.state);
       console.log(`🔄 Video synced in session ${socket.sessionId}`);
     }
   });
@@ -226,21 +226,26 @@ io.on('connection', (socket) => {
       const session = sessions.get(socket.sessionId);
       if (session) {
         console.log(`🔍 User ${socket.id} disconnecting from session ${socket.sessionId}`);
+        
+        // Remove user from participants array
+        const participantIndex = session.participants.indexOf(socket.id);
+        if (participantIndex > -1) {
+          session.participants.splice(participantIndex, 1);
+        }
+        
         if (socket.isHost) {
-          // Host disconnected, notify guest and close session
+          // Host disconnected, notify all participants and close session
           console.log(`👤 Host disconnected from session ${socket.sessionId}`);
-          if (session.guest) {
-            io.to(session.guest).emit('host-disconnected');
-          }
+          socket.to(socket.sessionId).emit('host-disconnected');
           sessions.delete(socket.sessionId);
           console.log(`🗑️ Session ${socket.sessionId} deleted`);
         } else {
-          // Guest disconnected
-          console.log(`👤 Guest disconnected from session ${socket.sessionId}`);
-          session.guest = null;
-          if (session.host) {
-            io.to(session.host).emit('guest-disconnected');
-          }
+          // Participant disconnected
+          console.log(`👤 Participant disconnected from session ${socket.sessionId} (${session.participants.length}/${MAX_PARTICIPANTS_PER_SESSION})`);
+          socket.to(socket.sessionId).emit('participant-disconnected', {
+            participantId: socket.id,
+            participantCount: session.participants.length
+          });
         }
       }
     }
@@ -253,22 +258,26 @@ io.on('connection', (socket) => {
     if (sessions.has(sessionId)) {
       const session = sessions.get(sessionId);
       
-      // Check if this user is the host or guest
+      // Remove user from participants array
+      const participantIndex = session.participants.indexOf(socket.id);
+      if (participantIndex > -1) {
+        session.participants.splice(participantIndex, 1);
+      }
+      
+      // Check if this user is the host
       if (session.host === socket.id) {
-        // Host is leaving, notify guest and close session
+        // Host is leaving, notify all participants and close session
         console.log(`👤 Host leaving session ${sessionId}`);
-        if (session.guest) {
-          io.to(session.guest).emit('host-disconnected');
-        }
+        socket.to(sessionId).emit('host-disconnected');
         sessions.delete(sessionId);
         console.log(`🗑️ Session ${sessionId} deleted`);
-      } else if (session.guest === socket.id) {
-        // Guest is leaving
-        console.log(`👤 Guest leaving session ${sessionId}`);
-        session.guest = null;
-        if (session.host) {
-          io.to(session.host).emit('guest-disconnected');
-        }
+      } else {
+        // Participant is leaving
+        console.log(`👤 Participant leaving session ${sessionId} (${session.participants.length}/${MAX_PARTICIPANTS_PER_SESSION})`);
+        socket.to(sessionId).emit('participant-disconnected', {
+          participantId: socket.id,
+          participantCount: session.participants.length
+        });
       }
     }
     
@@ -283,7 +292,13 @@ io.on('connection', (socket) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'OK', sessions: sessions.size });
+  const totalParticipants = Array.from(sessions.values()).reduce((total, session) => total + session.participants.length, 0);
+  res.json({ 
+    status: 'OK', 
+    sessions: sessions.size,
+    totalParticipants,
+    maxParticipantsPerSession: MAX_PARTICIPANTS_PER_SESSION
+  });
 });
 
 // Debug endpoint to list all sessions
@@ -291,7 +306,9 @@ app.get('/debug/sessions', (req, res) => {
   const sessionList = Array.from(sessions.entries()).map(([id, session]) => ({
     id,
     host: session.host,
-    guest: session.guest,
+    participants: session.participants,
+    participantCount: session.participants.length,
+    maxParticipants: MAX_PARTICIPANTS_PER_SESSION,
     videoUrl: session.videoUrl,
     videoState: session.videoState,
     createdAt: session.createdAt
@@ -299,6 +316,7 @@ app.get('/debug/sessions', (req, res) => {
   console.log(`📋 Debug: ${sessions.size} active sessions:`, sessionList);
   res.json({ 
     sessionCount: sessions.size,
+    maxParticipantsPerSession: MAX_PARTICIPANTS_PER_SESSION,
     sessions: sessionList,
     sessionIds: Array.from(sessions.keys())
   });
@@ -309,7 +327,7 @@ app.post('/debug/create-session', (req, res) => {
   const sessionId = generateSessionId();
   sessions.set(sessionId, {
     host: 'test-host',
-    guest: null,
+    participants: ['test-host'],
     videoUrl: null,
     videoState: {
       currentTime: 0,
